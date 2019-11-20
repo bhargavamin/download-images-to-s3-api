@@ -1,0 +1,258 @@
+AWSTemplateFormatVersion: '2010-09-09'   
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: '192.0.0.0/16'
+    PublicOne:
+      CIDR: '192.0.0.0/24'
+    PublicTwo:
+      CIDR: '192.0.1.0/24'
+
+Resources:
+  # VPC into which stack instances will be placed
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicOne', 'CIDR']
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicTwo', 'CIDR']
+      MapPublicIpOnLaunch: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachement
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+
+  # ECS Cluster 
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+
+  # This is an IAM role which authorizes ECS to manage resources on your account on your behalf, such as updating your
+  # load balancer with the details of where your containers are, so that traffic can reach your containers.
+
+  # ECS tasks execution role
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+
+      Path: /
+      Policies:
+      - PolicyName: AmazonEcsTaskExecutionRolePolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+            - ecr:GetAuthorizationToken
+            - ecr:BatchCheckLayerAvailability
+            - ecr:GetDownloadUrlForLayer
+            - ecr:BatchGetImage
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+
+  # Application load balancer SGs
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the containers
+      VpcId:
+        Ref: VPC
+
+  ECSServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+        Description: s3 api
+
+  ALBSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: 
+        Ref: AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+
+  # Application load balancer ECS cluster services
+  ECSALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name:
+        Fn::Sub: ${AWS::StackName}-alb
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets:
+        - Ref: PublicSubnetOne
+        - Ref: PublicSubnetTwo
+      SecurityGroups:
+        - Ref: AlbSecurityGroup
+
+  AlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: ApiTargetGroup
+      LoadBalancerArn:
+        Ref: ECSALB
+      Port: '80'
+      Protocol: HTTP
+
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: ApiTargetGroup
+      Conditions:
+      - Field: path-pattern
+        Values:
+        - "/"
+      ListenerArn:
+        Ref: AlbListener
+      Priority: 1
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 4
+      HealthCheckPath: /ping
+      Matcher:
+        HttpCode: '200-299'
+      Name:
+        Fn::Sub: ${AWS::StackName}-alb-tg
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 3
+      TargetType: 'ip'
+      VpcId:
+        Ref: VPC
+
+
+Outputs:
+  ClusterName:
+    Description: The name of the ECS cluster, used by the deploy script
+    Value: !Ref 'ECSCluster'
+    Export:
+      Name: !Join ['-', [!Ref "AWS::StackName", "ClusterName" ]]
+
+  Url:
+    Description: The url at which the application is available
+    Value: !Join ['', [!GetAtt 'ECSALB.DNSName']]
+
+  ALBName:
+    Description: The url at which the application is available
+    Value: !Join ['', [!GetAtt 'ECSALB.LoadBalancerName']]
+
+  ALBArn:
+    Description: The ARN of the ALB, exported for later use in creating services
+    Value: !Ref 'ECSALB'
+    Export:
+      Name: !Join ['-', [!Ref "AWS::StackName", "ALBArn" ]]
+
+  ECSTaskExecRole:
+    Description: The ARN of the ECS Task Execution role, exports for later use in creating task defination
+    Value: !GetAtt 'EcsTaskExecutionRole.Arn'
+    Export:
+      Name: !Join ['-', [!Ref "AWS::StackName", "ECSTaskExecRole" ]]
+
+  VPCId:
+    Description: The ID of the VPC that this stack is deployed in
+    Value: !Ref 'VPC'
+    Export:
+      Name: "base-vpc-id"
+
+  ECSSecurityGroupId:
+    Description: ID of ECS service SGs
+    Value: !GetAtt 'ECSServiceSecurityGroup.GroupId'
+    Export:
+      Name: "ECSServiceSecurityGroup"
+
+  AlbSecurityGroupId:
+    Description: ID of ALB security Group
+    Value: !GetAtt 'AlbSecurityGroup.GroupId'
+
+  ApiTargetGroupArn:
+    Description: ARN for Api target group
+    Value: !Ref 'ApiTargetGroup'
+
+  PublicSubnetOne:
+    Export:
+      Name: "base-subnet1"
+    Value: !Ref 'PublicSubnetOne'
+  
+  PublicSubnetTwo:
+    Export:
+      Name: "base-subnet2"
+    Value: !Ref 'PublicSubnetTwo'

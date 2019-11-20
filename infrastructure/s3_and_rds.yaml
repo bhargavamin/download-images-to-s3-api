@@ -1,0 +1,114 @@
+---
+
+AWSTemplateFormatVersion: '2010-09-09'
+
+
+Description: Create RDS Instance and S3 Bucket
+
+
+Parameters:
+  ShortEnv:
+    AllowedValues:
+    - p
+    - s
+    ConstraintDescription: must specify to define resources
+    Description: Short Environment type
+    Type: String
+
+  DatabaseRootPw:
+    Description: Password for Database-root user
+    ConstraintDescription: must specify pw for root access
+    Type: String
+    NoEcho: true
+
+
+Outputs:
+  DatabaseInstanceEndpointAddress:
+    Description: DatabaseInstance Endpoint Address
+    Value:
+      Fn::GetAtt:
+        - DatabaseInstance
+        - Endpoint.Address
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-DatabaseInstanceEndpointAddress
+
+  ImageBucket:
+    Description: The name of the bucket to store images
+    Value: !Ref 'ImageBucket'
+    Export:
+      Name: !Join ['-', [!Ref "AWS::StackName", "ImageBucket" ]]
+
+  IamUser:
+    Description: The name IAM user
+    Value: !Ref 'IamUser'
+
+
+Resources:
+  IamUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName:
+        Fn::Sub: env-${ShortEnv}-${AWS::StackName}-user
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  ImageBucket: 
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: env-${ShortEnv}-img1-bucket1
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      AllowMajorVersionUpgrade: true
+      AutoMinorVersionUpgrade: true
+      DBInstanceClass: db.t3.micro
+      DBInstanceIdentifier:
+       Fn::Sub: env-${ShortEnv}-${AWS::StackName}-database
+      DBSubnetGroupName:
+        Ref: DbSubnetGroup
+      Engine: MySQL
+      EngineVersion: 5.7.17
+      MasterUsername: root
+      MasterUserPassword:
+        Ref: DatabaseRootPw
+      MultiAZ: false
+      OptionGroupName: default:mysql-5-7
+      Port: 3306
+      PubliclyAccessible: true
+      StorageEncrypted: true
+      StorageType: gp2
+      VPCSecurityGroups:
+      - Ref: RdsSecurityGroup
+      - Fn::ImportValue: ECSServiceSecurityGroup
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription:
+        Fn::Sub: ${AWS::StackName}-DbSubnetGroup
+      SubnetIds:
+      - Fn::ImportValue: base-subnet1
+      - Fn::ImportValue: base-subnet2
+
+  # SGs
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the containers
+      VpcId:
+        Fn::ImportValue: base-vpc-id
+
+  RdsSecurityGroupMysqlInbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: 
+        Ref: RdsSecurityGroup
+      IpProtocol: tcp
+      FromPort: '3306'
+      ToPort: '3306'
+      CidrIp: 0.0.0.0/0
+
