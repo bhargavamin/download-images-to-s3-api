@@ -1,0 +1,11 @@
+# Docker compose file to build locally
+version: '3.4'
+services:
+  image_to_s3:
+    build: .
+    ports:
+      - "80:80"
+    volumes:
+      - .:/usr/src/app
+
+

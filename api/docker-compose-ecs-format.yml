@@ -1,0 +1,10 @@
+# Compose file according to ecs accepted format.
+# This file includes <image> instead of <build> part
+services:
+  image_to_s3:
+    image: xxxxxxxxx.dkr.ecr.eu-west-1.amazonaws.com/image_to_s3:latest
+    ports:
+      - 80:80
+    volumes:
+      - .:/usr/src/app
+version: '3.4'
