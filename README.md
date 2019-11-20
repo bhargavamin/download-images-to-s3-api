@@ -9,6 +9,7 @@
 
 - Step 1: Setup infrastructure from `infrastructure` dir.
 - Step 2: Run and Deploy APP
+
 Refer `infrastructure/README.md` for setup and deployment details.
 
 ## API Usage
